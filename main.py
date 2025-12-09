@@ -2,8 +2,8 @@
 """
 Fireworks AI Cost Agent
 
-An LLM-powered browser agent that syncs Fireworks AI model pricing
-to the LiteLLM model pricing database.
+An agent that syncs Fireworks AI model pricing to the LiteLLM model pricing database.
+Uses Firecrawl to scrape models and GitHub API to create PRs.
 """
 
 import asyncio
@@ -14,11 +14,7 @@ import sys
 from dotenv import load_dotenv
 
 from agent.browser_agent import scrape_fireworks_models
-from agent.compare import (
-    compare_models,
-    fetch_litellm_models,
-    generate_litellm_json_update,
-)
+from agent.compare import compare_models, fetch_litellm_raw
 from agent.github_pr import create_pull_request
 
 # Configure logging
@@ -36,8 +32,8 @@ async def main():
     load_dotenv()
 
     # Validate required environment variables
-    if not os.environ.get("OPENAI_API_KEY"):
-        logger.error("OPENAI_API_KEY environment variable is required")
+    if not os.environ.get("FIRECRAWL_API_KEY"):
+        logger.error("FIRECRAWL_API_KEY environment variable is required")
         sys.exit(1)
 
     if not os.environ.get("GITHUB_TOKEN"):
@@ -50,7 +46,7 @@ async def main():
 
     # Step 1: Scrape Fireworks AI models
     logger.info("\n📡 Step 1: Scraping Fireworks AI models...")
-    logger.info("This will open a browser and navigate to fireworks.ai/models")
+    logger.info("Using Firecrawl to fetch https://fireworks.ai/models")
 
     try:
         scraped_models = await scrape_fireworks_models()
@@ -73,7 +69,8 @@ async def main():
     logger.info("\n🔍 Step 2: Comparing with LiteLLM database...")
 
     try:
-        litellm_data = await fetch_litellm_models()
+        # Fetch raw content and parsed data
+        raw_content, litellm_data = await fetch_litellm_raw()
         logger.info(f"✅ Fetched LiteLLM database ({len(litellm_data)} total models)")
 
         missing_models = compare_models(scraped_models, litellm_data)
@@ -99,11 +96,11 @@ async def main():
     logger.info("\n🚀 Step 3: Creating Pull Request...")
 
     try:
-        # Generate the updated JSON
-        updated_json = generate_litellm_json_update(missing_models, litellm_data)
-
-        # Create the PR
-        pr_url = create_pull_request(missing_models, updated_json)
+        # Create the PR with append-only logic
+        pr_url = create_pull_request(
+            missing_models=missing_models,
+            original_json_content=raw_content,
+        )
 
         if pr_url:
             logger.info(f"\n✅ Successfully created Pull Request!")
@@ -122,6 +119,8 @@ async def main():
     logger.info(f"  Scraped models:    {len(scraped_models)}")
     logger.info(f"  Missing models:    {len(missing_models)}")
     logger.info(f"  PR created:        {'Yes' if pr_url else 'No'}")
+    if pr_url:
+        logger.info(f"  PR URL:            {pr_url}")
     logger.info("=" * 60)
 
 
@@ -132,4 +131,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-

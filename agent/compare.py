@@ -10,23 +10,41 @@ from .browser_agent import FireworksModel
 LITELLM_JSON_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 
+async def fetch_litellm_raw() -> tuple[str, dict]:
+    """
+    Fetch the current model_prices_and_context_window.json from LiteLLM GitHub.
+
+    Returns tuple of (raw_content_string, parsed_dict).
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(LITELLM_JSON_URL, timeout=30.0)
+        response.raise_for_status()
+        raw_content = response.text
+        return raw_content, json.loads(raw_content)
+
+
 async def fetch_litellm_models() -> dict:
     """
     Fetch the current model_prices_and_context_window.json from LiteLLM GitHub.
 
     Returns the parsed JSON as a dictionary.
     """
-    async with httpx.AsyncClient() as client:
-        response = await client.get(LITELLM_JSON_URL, timeout=30.0)
-        response.raise_for_status()
-        return response.json()
+    _, data = await fetch_litellm_raw()
+    return data
+
+
+def normalize_model_id(model_id: str) -> str:
+    """Normalize model ID for comparison."""
+    # Remove common prefixes
+    id = model_id.replace("accounts/fireworks/models/", "")
+    return id.lower().strip()
 
 
 def get_fireworks_models_from_litellm(litellm_data: dict) -> set[str]:
     """
     Extract all Fireworks AI model IDs from LiteLLM data.
 
-    Returns a set of model IDs (without the 'fireworks_ai/' prefix).
+    Returns a set of normalized model IDs.
     """
     fireworks_models = set()
 
@@ -34,7 +52,7 @@ def get_fireworks_models_from_litellm(litellm_data: dict) -> set[str]:
         if key.startswith("fireworks_ai/"):
             # Remove the prefix to get just the model ID
             model_id = key.replace("fireworks_ai/", "")
-            fireworks_models.add(model_id)
+            fireworks_models.add(normalize_model_id(model_id))
 
     return fireworks_models
 
@@ -51,43 +69,13 @@ def compare_models(
 
     missing_models = []
     for model in scraped_models:
-        # Check if this model exists in LiteLLM
-        # We try multiple variations of the model ID
-        model_id_variations = [
-            model.model_id,
-            model.model_id.replace("-", "_"),
-            model.model_id.replace("_", "-"),
-            model.name.lower().replace(" ", "-"),
-            model.name.lower().replace(" ", "_"),
-        ]
-
-        found = False
-        for variation in model_id_variations:
-            if variation in existing_ids:
-                found = True
-                break
-
-        if not found:
+        # Normalize the model ID for comparison
+        normalized = normalize_model_id(model.model_id)
+        
+        if normalized not in existing_ids:
             missing_models.append(model)
 
     return missing_models
-
-
-def generate_litellm_json_update(
-    missing_models: list[FireworksModel], existing_data: dict
-) -> dict:
-    """
-    Generate the updated LiteLLM JSON with new models added.
-
-    Returns the complete updated dictionary.
-    """
-    updated_data = existing_data.copy()
-
-    for model in missing_models:
-        key = f"fireworks_ai/{model.model_id}"
-        updated_data[key] = model.to_litellm_format()
-
-    return updated_data
 
 
 def generate_json_diff(
@@ -96,11 +84,11 @@ def generate_json_diff(
     """
     Generate a JSON snippet showing just the new models to be added.
 
-    Useful for PR descriptions.
+    Useful for PR descriptions and debugging.
     """
     new_entries = {}
     for model in missing_models:
-        key = f"fireworks_ai/{model.model_id}"
+        key = f"fireworks_ai/accounts/fireworks/models/{model.model_id}"
         new_entries[key] = model.to_litellm_format()
 
     return json.dumps(new_entries, indent=2)
@@ -111,8 +99,9 @@ if __name__ == "__main__":
 
     async def test():
         print("Fetching LiteLLM models...")
-        litellm_data = await fetch_litellm_models()
+        raw, litellm_data = await fetch_litellm_raw()
         print(f"Total models in LiteLLM: {len(litellm_data)}")
+        print(f"Raw content length: {len(raw)} chars")
 
         fireworks_ids = get_fireworks_models_from_litellm(litellm_data)
         print(f"Existing Fireworks models: {len(fireworks_ids)}")
@@ -120,4 +109,3 @@ if __name__ == "__main__":
             print(f"  - {mid}")
 
     asyncio.run(test())
-

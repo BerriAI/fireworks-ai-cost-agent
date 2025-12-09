@@ -5,8 +5,7 @@ description = "Agent to sync Fireworks AI models to LiteLLM pricing database"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "browser-use>=0.1.40",
-    "langchain-openai>=0.3.0",
+    "firecrawl-py>=4.0.0",
     "PyGithub>=2.5.0",
     "httpx>=0.28.0",
     "python-dotenv>=1.0.0",
@@ -29,4 +28,3 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-

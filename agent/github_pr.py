@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime
 
-from github import Github, GithubException
+from github import Github
 
 from .browser_agent import FireworksModel
 
@@ -15,15 +15,17 @@ JSON_FILE_PATH = "model_prices_and_context_window.json"
 
 def create_pull_request(
     missing_models: list[FireworksModel],
-    updated_json: dict,
+    original_json_content: str,
     github_token: str | None = None,
 ) -> str | None:
     """
     Create a Pull Request to add missing Fireworks models to LiteLLM.
+    
+    Uses append-only approach to preserve original file ordering.
 
     Args:
         missing_models: List of models to add
-        updated_json: The complete updated JSON dictionary
+        original_json_content: The original JSON file content as string
         github_token: GitHub personal access token (uses GITHUB_TOKEN env var if not provided)
 
     Returns:
@@ -35,90 +37,100 @@ def create_pull_request(
 
     g = Github(token)
     user = g.get_user()
-
-    # Get or create fork
-    upstream_repo = g.get_repo(UPSTREAM_REPO)
-    fork = get_or_create_fork(user, upstream_repo)
+    repo = g.get_repo(UPSTREAM_REPO)
 
     # Create branch name with timestamp
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     branch_name = f"add-fireworks-models-{timestamp}"
 
-    # Get the default branch (usually 'main')
-    default_branch = upstream_repo.default_branch
+    # Get the default branch
+    main_branch = repo.get_branch("main")
 
-    # Create branch from upstream's default branch
-    source_branch = upstream_repo.get_branch(default_branch)
-    fork.create_git_ref(
+    # Create branch from main
+    repo.create_git_ref(
         ref=f"refs/heads/{branch_name}",
-        sha=source_branch.commit.sha,
+        sha=main_branch.commit.sha,
     )
 
-    # Update the JSON file in the fork
-    file_content = json.dumps(updated_json, indent=2) + "\n"
+    # Build new entries and append to original content
+    updated_content = append_models_to_json(missing_models, original_json_content)
 
-    # Get the current file to get its SHA
-    try:
-        current_file = fork.get_contents(JSON_FILE_PATH, ref=branch_name)
-        fork.update_file(
-            path=JSON_FILE_PATH,
-            message=f"Add {len(missing_models)} new Fireworks AI models",
-            content=file_content,
-            sha=current_file.sha,
-            branch=branch_name,
-        )
-    except GithubException:
-        # File doesn't exist, create it
-        fork.create_file(
-            path=JSON_FILE_PATH,
-            message=f"Add {len(missing_models)} new Fireworks AI models",
-            content=file_content,
-            branch=branch_name,
-        )
+    # Update the JSON file
+    current_file = repo.get_contents(JSON_FILE_PATH, ref=branch_name)
+    repo.update_file(
+        path=JSON_FILE_PATH,
+        message=f"Add {len(missing_models)} new Fireworks AI models",
+        content=updated_content,
+        sha=current_file.sha,
+        branch=branch_name,
+    )
 
     # Create the Pull Request
     pr_title = f"Add {len(missing_models)} new Fireworks AI models"
     pr_body = generate_pr_body(missing_models)
 
-    pr = upstream_repo.create_pull(
+    pr = repo.create_pull(
         title=pr_title,
         body=pr_body,
-        head=f"{user.login}:{branch_name}",
-        base=default_branch,
+        head=branch_name,
+        base="main",
     )
 
     return pr.html_url
 
 
-def get_or_create_fork(user, upstream_repo) -> object:
-    """Get existing fork or create a new one."""
-    # Check if user already has a fork
-    try:
-        fork = user.get_repo(upstream_repo.name)
-        if fork.fork and fork.parent.full_name == UPSTREAM_REPO:
-            return fork
-    except GithubException:
-        pass
+def append_models_to_json(
+    models: list[FireworksModel], original_content: str
+) -> str:
+    """
+    Append new models to the JSON content without reordering existing entries.
+    
+    This preserves the original file structure and only adds new entries at the end.
+    """
+    # Build new entries
+    new_entries = {}
+    for m in models:
+        key = f"fireworks_ai/accounts/fireworks/models/{m.model_id}"
+        new_entries[key] = m.to_litellm_format()
 
-    # Create new fork
-    return user.create_fork(upstream_repo)
+    # Convert new entries to JSON string (without outer braces)
+    new_entries_str = json.dumps(new_entries, indent=4)[1:-1]
+
+    # Find position of last closing brace
+    last_brace = original_content.rfind("}")
+
+    # Check if there's content before the last brace (need comma)
+    content_before = original_content[:last_brace].rstrip()
+    if content_before.endswith("}"):
+        # Need to add a comma after the last entry
+        updated_content = content_before + "," + new_entries_str + "\n}"
+    else:
+        updated_content = content_before + new_entries_str + "\n}"
+
+    # Validate the JSON
+    json.loads(updated_content)  # Raises if invalid
+
+    return updated_content
 
 
 def generate_pr_body(missing_models: list[FireworksModel]) -> str:
     """Generate the PR description body."""
+    # Build model list (first 50)
     model_list = "\n".join(
-        f"- `fireworks_ai/{m.model_id}` - {m.name}" for m in missing_models[:50]
+        f"- `fireworks_ai/accounts/fireworks/models/{m.model_id}`"
+        for m in missing_models[:50]
     )
 
     if len(missing_models) > 50:
         model_list += f"\n- ... and {len(missing_models) - 50} more models"
 
-    # Group by type
-    type_counts = {}
+    # Group by mode/type
+    types = {}
     for m in missing_models:
-        type_counts[m.model_type] = type_counts.get(m.model_type, 0) + 1
+        mode = m.to_litellm_format().get("mode", "chat")
+        types[mode] = types.get(mode, 0) + 1
 
-    type_summary = ", ".join(f"{count} {t}" for t, count in sorted(type_counts.items()))
+    type_summary = ", ".join(f"{count} {t}" for t, count in sorted(types.items()))
 
     body = f"""## Summary
 
@@ -133,35 +145,13 @@ This PR adds **{len(missing_models)} new Fireworks AI models** to the LiteLLM mo
 
 ---
 
-### How this PR was generated
-
-This PR was automatically generated by the [Fireworks AI Cost Agent](https://github.com/ishaanjaffer/fireworks-ai-cost-agent), which:
-1. Scraped the latest models from https://fireworks.ai/models
-2. Compared against the existing LiteLLM model database
-3. Added missing models with their current pricing
+### Source
+Models scraped from https://fireworks.ai/models
 
 ### Verification
-
 Please verify the pricing information is accurate by checking https://fireworks.ai/models
-
 """
     return body
-
-
-def sync_fork_with_upstream(fork, upstream_repo):
-    """Sync the fork's default branch with upstream."""
-    default_branch = upstream_repo.default_branch
-    upstream_branch = upstream_repo.get_branch(default_branch)
-
-    try:
-        fork_branch = fork.get_branch(default_branch)
-        if fork_branch.commit.sha != upstream_branch.commit.sha:
-            # Update the fork's default branch
-            fork.get_git_ref(f"heads/{default_branch}").edit(
-                sha=upstream_branch.commit.sha, force=True
-            )
-    except GithubException:
-        pass
 
 
 if __name__ == "__main__":
@@ -188,4 +178,3 @@ if __name__ == "__main__":
     ]
 
     print(generate_pr_body(test_models))
-
