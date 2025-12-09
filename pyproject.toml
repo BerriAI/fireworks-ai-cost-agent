@@ -1,0 +1,32 @@
+[project]
+name = "fireworks-ai-cost-agent"
+version = "0.1.0"
+description = "Agent to sync Fireworks AI models to LiteLLM pricing database"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "browser-use>=0.1.40",
+    "langchain-openai>=0.3.0",
+    "PyGithub>=2.5.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
